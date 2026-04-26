@@ -2,7 +2,7 @@
 
 > **主题**：穿透 abigen 屏蔽层 — Custom Error 精确解码
 > **仓库**：`EventIndexer`（新建）
-> **Commit**：`91996eb` Stage 2 Day 1: implement custom error decoder
+> Stage 2 Day 1: implement custom error decoder
 
 ---
 
@@ -490,5 +490,3 @@ Demo 2: InvalidProjectId(999)（先 evm_increaseTime 进入 vote 阶段）
 **今天先在心里装上这个意识，Day 2 开始实操。**
 
 ---
-
-*笔记完成于 2026-04-25，commit 91996eb。*
