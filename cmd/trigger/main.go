@@ -63,7 +63,9 @@ func main() {
 	chainNow := time.Now().Unix()
 	deadlineSubmit := big.NewInt(chainNow + 3600)
 	deadlineVote := big.NewInt(chainNow + 7200)
-	addr, deployTx, contract, err := winner.DeployWinnerTakesAll(aliceTxOpts, client, deadlineSubmit, deadlineVote)
+	addr, deployTx, contract, err := winner.DeployWinnerTakesAll(
+		NewTxOpts(*aliceTxOpts, nil),
+		client, deadlineSubmit, deadlineVote)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -81,7 +83,7 @@ func main() {
 
 	// 5. 提交项目 3个用户分别提交一个项目（触发 ProjectSubmitted）
 	aliceSubmitTx, err := contract.SubmitProject(
-		&bind.TransactOpts{From: aliceTxOpts.From, Signer: aliceTxOpts.Signer},
+		NewTxOpts(*aliceTxOpts, nil),
 		"Alice's Project",
 		"https://alice.example",
 	)
@@ -94,7 +96,7 @@ func main() {
 	}
 
 	bobSubmitTx, err := contract.SubmitProject(
-		&bind.TransactOpts{From: bobTxOpts.From, Signer: bobTxOpts.Signer},
+		NewTxOpts(*bobTxOpts, nil),
 		"Bob's Project",
 		"https://bob.example",
 	)
@@ -107,7 +109,7 @@ func main() {
 	}
 
 	carolSubmitTx, err := contract.SubmitProject(
-		&bind.TransactOpts{From: carolTxOpts.From, Signer: carolTxOpts.Signer},
+		NewTxOpts(*carolTxOpts, nil),
 		"Carol's Project",
 		"https://carol.example",
 	)
@@ -119,4 +121,80 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// 6. 投票阶段时间偏移
+	err = client.Client().CallContext(ctx, nil, "evm_increaseTime", 4000)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = client.Client().CallContext(ctx, nil, "evm_mine")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 7. 投票
+	aliceVoteTx, err := contract.VoteForProject(
+		NewTxOpts(*aliceTxOpts, Eth(2)),
+		big.NewInt(1), // 投 Bob 的项目
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = bind.WaitMined(ctx, client, aliceVoteTx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	bobVoteTx, err := contract.VoteForProject(
+		NewTxOpts(*bobTxOpts, Eth(3)),
+		big.NewInt(0), // 投 Alice 的项目
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = bind.WaitMined(ctx, client, bobVoteTx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	carolVoteTx, err := contract.VoteForProject(
+		NewTxOpts(*carolTxOpts, Eth(1)),
+		big.NewInt(0), // 投 Alice 的项目
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = bind.WaitMined(ctx, client, carolVoteTx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 8. 结算阶段时间偏移
+	err = client.Client().CallContext(ctx, nil, "evm_increaseTime", 4000)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = client.Client().CallContext(ctx, nil, "evm_mine")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 9. Carol调用结算函数
+	closeTx, err := contract.CloseRound(NewTxOpts(*carolTxOpts, nil))
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = bind.WaitMined(ctx, client, closeTx)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func Eth(amount int64) *big.Int {
+	weiPerEth := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	return new(big.Int).Mul(big.NewInt(amount), weiPerEth)
+}
+
+func NewTxOpts(txOpts bind.TransactOpts, value *big.Int) *bind.TransactOpts {
+	txOpts.Value = value
+	return &txOpts
 }
