@@ -2,6 +2,7 @@ package main
 
 import (
 	"EventIndexer/abigen/winner"
+	"EventIndexer/internal/db"
 	"EventIndexer/internal/indexer"
 	"context"
 	"fmt"
@@ -32,6 +33,16 @@ func main() {
 		log.Printf("👋 收到信号: %v", sig)
 		cancel()
 	}()
+
+	// init DB
+	cfg := db.DefaultConfig()
+	database, err := db.Connect(cfg)
+	if err != nil {
+		log.Fatalf("connect to the postgres failed: %v", err)
+	}
+	defer database.Close()
+
+	repo := db.NewRepo(database)
 
 	// 1. 获取合约地址
 	if len(os.Args) < 2 {
@@ -104,6 +115,11 @@ func main() {
 		fmt.Printf("🔔 [块 %d] projectId=%d name=%q submitter=%s tx=%s\n",
 			e.BlockNumber, e.ProjectID, e.Name, e.Submitter, e.TxHash[:10]+"...")
 		//time.Sleep(3 * time.Second) // ← 故意慢 3 秒，做反压实验(将2个chan buffer改为1)
+		err := repo.InsertEvent(ctx, e)
+		if err != nil {
+			log.Printf("insert failed: tx=%s block=%d err=%v", e.TxHash, e.BlockNumber, err)
+			return err
+		}
 		return nil
 	})
 	if err != nil {

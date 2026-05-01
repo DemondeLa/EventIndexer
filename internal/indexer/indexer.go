@@ -109,6 +109,8 @@ func (idx *Indexer) Run(ctx context.Context, onEvent func(Event) error) error {
 			if err := onEvent(event); err != nil {
 				log.Printf("处理失败 (projectId=%d): %v",
 					event.ProjectID, err)
+				//log.Printf("处理失败 (tx=%s block=%d projectId=%d): %v",
+				//	event.TxHash, event.BlockNumber, event.ProjectID, err)
 			}
 		}
 	}()
