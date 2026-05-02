@@ -76,6 +76,12 @@ func main() {
 		log.Fatal(err)
 	}
 
+	//addr := common.HexToAddress("0x5FbDB2315678afecb367f032d93F642f64180aa3")
+	//contract, err := winner.NewWinnerTakesAll(addr, client)
+	//if err != nil {
+	//	log.Fatalf("get contract instance failed: %v", err)
+	//}
+
 	// 4. ⬇️ 在这里打断点 ⬇️
 	//    在 IDE 里把断点设在下面这一行
 	//    手动点击"继续"才会执行 SubmitProject
@@ -120,6 +126,34 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	/***** Day5:测试读log和watch监听 *****/
+	//fmt.Println("⏸️  按下断点继续，让 watch 会触发 SubmitProject...")
+	aKey, _ := crypto.HexToECDSA("7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6")
+	aTxOpts, err := bind.NewKeyedTransactorWithChainID(aKey, big.NewInt(chainID))
+	bKey, _ := crypto.HexToECDSA("47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a")
+	bTxOpts, err := bind.NewKeyedTransactorWithChainID(bKey, big.NewInt(chainID))
+	cKey, _ := crypto.HexToECDSA("8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba")
+	cTxOpts, err := bind.NewKeyedTransactorWithChainID(cKey, big.NewInt(chainID))
+	aSubmitTx, _ := contract.SubmitProject(
+		NewTxOpts(*aTxOpts, nil),
+		"A's Project",
+		"https://a.example",
+	)
+	bind.WaitMined(ctx, client, aSubmitTx)
+	bSubmitTx, _ := contract.SubmitProject(
+		NewTxOpts(*bTxOpts, nil),
+		"B's Project",
+		"https://b.example",
+	)
+	bind.WaitMined(ctx, client, bSubmitTx)
+	cSubmitTx, _ := contract.SubmitProject(
+		NewTxOpts(*cTxOpts, nil),
+		"C's Project",
+		"https://c.example",
+	)
+	bind.WaitMined(ctx, client, cSubmitTx)
+	/***** Day5:测试读log和watch监听 *****/
 
 	// 6. 投票阶段时间偏移
 	err = client.Client().CallContext(ctx, nil, "evm_increaseTime", 4000)

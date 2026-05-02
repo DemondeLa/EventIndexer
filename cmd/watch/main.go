@@ -110,7 +110,22 @@ func main() {
 	if err != nil {
 		log.Fatalf("init indexer failed: %v", err)
 	}
-	err = idx.Run(ctx, func(e indexer.Event) error {
+
+	// 读 DB：上次同步到哪一块
+	lastSynced, err := repo.GetLastSyncedBlock(ctx)
+	if err != nil {
+		log.Fatalf("get last synced block failed: %v", err)
+	}
+
+	// 读链：当前最新块
+	// 这里只需要块号，用 BlockNumber 比 HeaderByNumber 流量更省（只返回数字而不是整个区块头）
+	currentBlock, err := client.BlockNumber(ctx)
+	if err != nil {
+		log.Fatalf("get current block failed: %v", err)
+	}
+
+	// 定义 callback（Sync 和 Run 共用）
+	onEvent := func(e indexer.Event) error {
 		// onEvent 回调："事件来了打印一下"
 		fmt.Printf("🔔 [块 %d] projectId=%d name=%q submitter=%s tx=%s\n",
 			e.BlockNumber, e.ProjectID, e.Name, e.Submitter, e.TxHash[:10]+"...")
@@ -120,8 +135,30 @@ func main() {
 			log.Printf("insert failed: tx=%s block=%d err=%v", e.TxHash, e.BlockNumber, err)
 			return err
 		}
-		return nil
-	})
+		return repo.UpdateLastSyncedBlock(ctx, e.BlockNumber)
+	}
+
+	// 决策：要不要 Sync？
+	if lastSynced <= currentBlock {
+		fmt.Printf("⛳ 上次同步到块 %d，现在最新块是 %d\n", lastSynced, currentBlock)
+
+		err = idx.Sync(ctx, lastSynced, currentBlock, onEvent)
+		if err != nil {
+			log.Fatalf("initial sync failed: %v", err)
+		}
+		/* Sync 完后显式 UpdateLastSyncedBlock(ctx, currentBlock)
+		   当前依赖 onEvent 推进 sync_state，导致"扫描了空块但 sync_state 不更新"
+		   本地 Hardhat 块少没影响，Sepolia/主网回填时必须改
+		*/
+		err = repo.UpdateLastSyncedBlock(ctx, currentBlock)
+		if err != nil {
+			log.Fatalf("sync last block failed: %v", err)
+		}
+	} else {
+		log.Println("✅ 历史数据已是最新，跳过同步")
+	}
+
+	err = idx.Run(ctx, onEvent)
 	if err != nil {
 		log.Fatalf("start indexer failed: %v", err)
 	}

@@ -46,6 +46,37 @@ func convertToEvent(raw *winner.WinnerTakesAllProjectSubmitted) Event {
 	}
 }
 
+func (idx *Indexer) Sync(ctx context.Context, fromBlock, toBlock uint64, onEvent func(Event) error) error {
+	opts := &bind.FilterOpts{
+		Start:   fromBlock,
+		End:     &toBlock,
+		Context: ctx,
+	}
+
+	iter, err := idx.contract.FilterProjectSubmitted(opts, nil, nil)
+	if err != nil {
+		return fmt.Errorf("filter events: %w", err)
+	}
+	defer iter.Close() // 必须释放
+
+	count := 0
+	for iter.Next() { // 推进游标
+		count++
+		ev := convertToEvent(iter.Event)
+		if err := onEvent(ev); err != nil {
+			log.Printf("处理失败 (tx=%s block=%d projectId=%d): %v",
+				ev.TxHash, ev.BlockNumber, ev.ProjectID, err)
+			return err
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return fmt.Errorf("iterate events: %w", iter.Error())
+	}
+
+	log.Printf("✅ 历史同步完成，共 %d 条", count)
+	return nil
+}
+
 func (idx *Indexer) Run(ctx context.Context, onEvent func(Event) error) error {
 	var wg sync.WaitGroup
 	wg.Add(2)
