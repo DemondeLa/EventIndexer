@@ -2,13 +2,16 @@ package indexer
 
 import (
 	"EventIndexer/abigen/winner"
+	"EventIndexer/internal/db"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 type Event struct {
@@ -24,14 +27,20 @@ type Event struct {
 
 type Indexer struct {
 	contract *winner.WinnerTakesAll // ← abigen 生成的合约 binding
+	repo     *db.Repo
+	client   *ethclient.Client
 }
 
-func NewIndexer(contract *winner.WinnerTakesAll) (*Indexer, error) {
+func NewIndexer(contract *winner.WinnerTakesAll, r *db.Repo, c *ethclient.Client) (*Indexer, error) {
 	if contract == nil {
 		return nil, errors.New("contract is nil") // 防御
 	}
-	// 未来可能：验证合约 ABI、ping 一下节点、加载配置...
-	return &Indexer{contract: contract}, nil
+
+	return &Indexer{
+		contract: contract,
+		repo:     r,
+		client:   c,
+	}, nil
 }
 
 func convertToEvent(raw *winner.WinnerTakesAllProjectSubmitted) Event {
@@ -77,7 +86,43 @@ func (idx *Indexer) Sync(ctx context.Context, fromBlock, toBlock uint64, onEvent
 	return nil
 }
 
-func (idx *Indexer) Run(ctx context.Context, onEvent func(Event) error) error {
+func (idx *Indexer) syncBeforeWatch(ctx context.Context, onEvent func(Event) error) error {
+	// 1. 读 sync_state 上次同步到哪一块
+	lastSynced, err := idx.repo.GetLastSyncedBlock(ctx)
+	if err != nil {
+		return fmt.Errorf("get last synced block: %w", err)
+	}
+
+	// 2. 查最新块（用 idx.client.BlockNumber）
+	currentBlock, err := idx.client.BlockNumber(ctx)
+	// 这里只需要块号，用 BlockNumber 比 HeaderByNumber 流量更省（只返回数字而不是整个区块头）
+	if err != nil {
+		return fmt.Errorf("get current block: %w", err)
+	}
+
+	// 3. 决定要不要 sync（Day 5 的逻辑：if lastSynced <= currentBlock）
+	if lastSynced > currentBlock {
+		log.Println("✅ 历史数据已是最新，跳过同步")
+		return nil
+	}
+
+	fmt.Printf("⛳ 上次同步到块 %d，现在最新块是 %d\n", lastSynced, currentBlock)
+
+	// 4. 调 idx.Sync(ctx, lastSynced+1, currentBlock, onEvent)
+	err = idx.Sync(ctx, lastSynced, currentBlock, onEvent)
+	if err != nil {
+		return fmt.Errorf("initial sync: %w", err)
+	}
+	// 5. 调 db.UpdateLastSyncedBlock 更新进度
+	err = idx.repo.UpdateLastSyncedBlock(ctx, currentBlock)
+	if err != nil {
+		return fmt.Errorf("update last block: %w", err)
+	}
+
+	return nil
+}
+
+func (idx *Indexer) runSession(ctx context.Context, onEvent func(Event) error) error {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -95,6 +140,7 @@ func (idx *Indexer) Run(ctx context.Context, onEvent func(Event) error) error {
 
 	// 2. 创建业务 channel
 	eventCh := make(chan Event, 32)
+	var runErr error
 
 	// 3. 生产者 goroutine
 	go func() {
@@ -124,6 +170,7 @@ func (idx *Indexer) Run(ctx context.Context, onEvent func(Event) error) error {
 				if err != nil {
 					// 真正的错误（连接断了、节点出问题等）
 					log.Printf("订阅出错: %v", err)
+					runErr = err
 					return
 				}
 			case <-ctx.Done():
@@ -148,5 +195,57 @@ func (idx *Indexer) Run(ctx context.Context, onEvent func(Event) error) error {
 
 	// 5. 等待上下文结束，优雅退出
 	wg.Wait()
-	return nil
+	return runErr
+}
+
+func (idx *Indexer) Run(ctx context.Context, onEvent func(Event) error) error {
+	const maxRetries = 10
+	const retryWait = 5 * time.Second
+	retries := 0
+
+	for {
+		// 先 sync 历史
+		if err := idx.syncBeforeWatch(ctx, onEvent); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if retries >= maxRetries {
+				return fmt.Errorf("retry budget exhausted (sync): %w", err)
+			}
+			retries++
+			log.Printf("[WARN] sync 失败: %v，%s 后重试（%d/%d）", err, retryWait, retries, maxRetries)
+			select {
+			case <-time.After(retryWait):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			continue
+		}
+
+		err := idx.runSession(ctx, onEvent)
+
+		// 先 check ctx（可能是用户取消了），再 check 错误（可能是网络问题等）
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// runSession 正常返回 → 退出
+		if err == nil {
+			return nil
+		}
+		// err != nil 且 ctx 没取消 → 是 transient 错误
+		if retries >= maxRetries {
+			log.Printf("[ERROR] 重试预算耗尽（%d 次），放弃", maxRetries)
+			return fmt.Errorf("retry budget exhausted: %w", err)
+		}
+		retries++
+		log.Printf("[WARN] runSession 失败: %v，%s 后重试（%d/%d）",
+			err, retryWait, retries, maxRetries)
+
+		// sleep（ctx-aware）
+		select {
+		case <-time.After(retryWait):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
